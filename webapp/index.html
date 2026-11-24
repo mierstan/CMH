@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>故事接龙 · 33M 小模型演示</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f25; --line: #2a2e36;
+    --text: #e6e4df; --dim: #9a9891; --accent: #e0a458;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.75 "Source Han Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+    max-width: 720px; margin: 0 auto; padding: 48px 24px 80px;
+  }
+  h1 { font-size: 22px; font-weight: 600; letter-spacing: 0.5px; }
+  h1 span { color: var(--accent); }
+  .sub { color: var(--dim); margin: 10px 0 36px; font-size: 13.5px; }
+  label { display: block; font-size: 13px; color: var(--dim); margin: 22px 0 8px; }
+  textarea {
+    width: 100%; min-height: 96px; resize: vertical;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px 14px; font: inherit; outline: none;
+  }
+  textarea:focus { border-color: var(--accent); }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; margin-top: 18px; }
+  .row .opt label { margin-top: 0; }
+  .opts { display: flex; gap: 10px; flex-wrap: wrap; }
+  .chip {
+    border: 1px solid var(--line); background: var(--panel); color: var(--dim);
+    border-radius: 999px; padding: 4px 14px; font-size: 12.5px; cursor: pointer;
+    user-select: none;
+  }
+  .chip.on { border-color: var(--accent); color: var(--accent); }
+  .slider { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 13px; }
+  .slider b { color: var(--text); min-width: 36px; text-align: right; font-weight: 400; }
+  input[type=range] { accent-color: var(--accent); width: 130px; }
+  #go {
+    margin-top: 26px; width: 100%; padding: 12px;
+    background: var(--accent); color: #14161a; border: 0; border-radius: 8px;
+    font: 600 15px inherit; cursor: pointer;
+  }
+  #go:disabled { opacity: 0.55; cursor: wait; }
+  #out {
+    margin-top: 30px; padding: 20px 22px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    font: 15px/1.9 Georgia, "Times New Roman", serif; white-space: pre-wrap;
+    min-height: 60px;
+  }
+  #out .prompt { color: var(--dim); }
+  #err { color: #e2725b; font-size: 13px; margin-top: 12px; }
+  .note { color: var(--dim); font-size: 12.5px; margin-top: 40px; border-top: 1px solid var(--line); padding-top: 18px; }
+  .note p { margin: 6px 0; }
+</style>
+</head>
+<body>
+  <h1>故事接龙 <span>·</span> 33M 参数小模型</h1>
+  <p class="sub">你写个开头，它接着往下讲。选「全注意力」或「CMH」可以直观对比两种架构的生成质量——这正是论文里的核心对照。</p>
+
+  <label>开头（英文，建议一两句）</label>
+  <textarea id="prompt">Once upon a time, there was a little girl named Lily. She loved to play in the park. One day,</textarea>
+  <div class="row">
+    <div class="chip" data-p="Once upon a time, there was a little girl named Lily. She loved to play in the park. One day,">例 1</div>
+    <div class="chip" data-p="Tom had a small red ball. He wanted to show it to his friend Ben. Tom said,">例 2</div>
+    <div class="chip" data-p="The sun was very big and hot. Sue did not like it. She said to her mom,">例 3</div>
+  </div>
+
+  <div class="row">
+    <div class="opt">
+      <label>模型</label>
+      <div class="opts">
+        <div class="chip on" data-m="full">全注意力（33.7M）</div>
+        <div class="chip" data-m="cmh">CMH 混合（38.4M）</div>
+      </div>
+    </div>
+    <div class="opt slider">
+      <label>温度</label>
+      <input type="range" id="temp" min="0.5" max="1.2" step="0.05" value="0.85">
+      <b id="tempv">0.85</b>
+    </div>
+    <div class="opt slider">
+      <label>长度</label>
+      <input type="range" id="len" min="40" max="250" step="10" value="120">
+      <b id="lenv">120</b>
+    </div>
+  </div>
+
+  <button id="go">接着写</button>
+  <div id="out"><span class="prompt">生成结果会出现在这里。模型不会回答问题——它只学过讲故事，没学过听问题。</span></div>
+  <div id="err"></div>
+
+  <div class="note">
+    <p>两个模型的差别：全注意力可以回看整个上下文；CMH 用固定大小的记忆状态替代注意力，快但在这么小的规模下还没学会用记忆。</p>
+    <p>模型只看过英文儿童故事，写别的题材会露馅。训练日志与代码见项目仓库。</p>
+  </div>
+
+<script>
+var model = "full";
+document.querySelectorAll("[data-m]").forEach(function (c) {
+  c.onclick = function () {
+    model = c.dataset.m;
+    document.querySelectorAll("[data-m]").forEach(function (x) { x.classList.remove("on"); });
+    c.classList.add("on");
+  };
+});
+document.querySelectorAll("[data-p]").forEach(function (c) {
+  c.onclick = function () { document.getElementById("prompt").value = c.dataset.p; };
+});
+document.getElementById("temp").oninput = function () { document.getElementById("tempv").textContent = this.value; };
+document.getElementById("len").oninput = function () { document.getElementById("lenv").textContent = this.value; };
+
+document.getElementById("go").onclick = function () {
+  var btn = this, out = document.getElementById("out"), err = document.getElementById("err");
+  err.textContent = "";
+  btn.disabled = true; btn.textContent = "在想……";
+  out.innerHTML = '<span class="prompt">生成中，几秒钟就好。</span>';
+  fetch("/api/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prompt: document.getElementById("prompt").value,
+      model: model,
+      max_new: +document.getElementById("len").value,
+      temperature: +document.getElementById("temp").value
+    })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    if (d.error) { err.textContent = "出错了：" + d.error; }
+    else {
+      out.innerHTML = '<span class="prompt">' + document.getElementById("prompt").value.replace(/</g, "&lt;") + '</span>';
+      out.appendChild(document.createTextNode(d.text.replace(/<\|endoftext\|>/g, " ")));
+    }
+  }).catch(function (e) { err.textContent = "请求失败：" + e; }).finally(function () {
+    btn.disabled = false; btn.textContent = "接着写";
+  });
+};
+</script>
+</body>
+</html>

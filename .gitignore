@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pt
+*.log
+out/
+data/
+models/
+*.aux
+*.out
+*.synctex.gz
