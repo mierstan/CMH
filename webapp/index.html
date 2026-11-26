@@ -109,7 +109,9 @@
 
 <script>
 var chatModel = "chat-full", storyModel = "full";
-var history = "";   // chat transcript in template format
+var transcript = "";   // chat transcript in template format
+// NB: do not name this "history" - window.history is a replaceable
+// accessor and shadowing it produces undefined payloads in some builds.
 
 // tabs
 document.querySelectorAll(".tab").forEach(function (t) {
@@ -163,14 +165,14 @@ function sendChat() {
   if (!u || btn.disabled) return;
   err.textContent = "";
   addTurn("USER", u);
-  history += "User: " + u + "\n\nAssistant:";
+  transcript += "User: " + u + "\n\nAssistant:";
   input.value = "";
   btn.disabled = true; btn.textContent = "在想……";
-  post("/api/chat", { history: history, model: chatModel,
+  post("/api/chat", { history: transcript, model: chatModel,
                       max_new: 120, temperature: +document.getElementById("ctemp").value })
   .then(function (d) {
     if (d.error) { err.textContent = "出错了：" + d.error; }
-    else { addTurn("ASSISTANT", d.text); history += d.text + "\n\n"; }
+    else { addTurn("ASSISTANT", d.text); transcript += d.text + "\n\n"; }
   })
   .catch(function (e) { err.textContent = "请求失败：" + e; })
   .finally(function () { btn.disabled = false; btn.textContent = "发送"; });
@@ -180,7 +182,7 @@ document.getElementById("chatinput").addEventListener("keydown", function (e) {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
 });
 document.getElementById("reset").onclick = function () {
-  history = "";
+  transcript = "";
   document.getElementById("chatlog").innerHTML =
     '<div class="turn bot"><span class="who">ASSISTANT</span>Context cleared.</div>';
 };

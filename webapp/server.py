@@ -60,6 +60,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")     # never serve a stale UI
         self.end_headers()
         self.wfile.write(data)
 
@@ -82,12 +83,18 @@ class Handler(BaseHTTPRequestHandler):
             if model not in MODELS:
                 return self._send(400, json.dumps({"error": "unknown model"}))
             if self.path == "/api/chat":
-                history = (req.get("history") or "").strip()
+                history = (req.get("history") or req.get("transcript") or "")
+                if not isinstance(history, str):
+                    history = ""
+                history = history.strip()
                 if not history:
+                    print(f"[chat] empty history, keys={list(req)}", flush=True)
                     return self._send(400, json.dumps({"error": "empty history"}))
-                # GPT-2 BPE turns a dangling space after a colon into a lone ' '
-                # token (id 220) that never occurs in training and breaks generation.
+                # Model was trained on "Assistant:" with no trailing space: GPT-2 BPE
+                # would otherwise emit a lone ' ' token (id 220) and generation derails.
                 history = re.sub(r":\s+$", ":", history)
+                if not history.endswith("Assistant:"):
+                    history = history.rstrip() + "\n\nAssistant:"
                 ids = tok(history, add_special_tokens=False)["input_ids"]
                 ids = ids[-(CTX - 140):]                     # leave room for generation
                 ids = torch.tensor([ids], dtype=torch.long).cuda()
