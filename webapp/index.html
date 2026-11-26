@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>故事接龙 · 33M 小模型演示</title>
+<title>CMH 小模型演示 · 对话与故事接龙</title>
 <style>
   :root {
     --bg: #14161a; --panel: #1c1f25; --line: #2a2e36;
@@ -16,8 +16,16 @@
   }
   h1 { font-size: 22px; font-weight: 600; letter-spacing: 0.5px; }
   h1 span { color: var(--accent); }
-  .sub { color: var(--dim); margin: 10px 0 36px; font-size: 13.5px; }
-  label { display: block; font-size: 13px; color: var(--dim); margin: 22px 0 8px; }
+  .sub { color: var(--dim); margin: 10px 0 26px; font-size: 13.5px; }
+  .tabs { display: flex; gap: 10px; margin-bottom: 24px; }
+  .tab {
+    border: 1px solid var(--line); background: var(--panel); color: var(--dim);
+    border-radius: 999px; padding: 6px 18px; font-size: 14px; cursor: pointer; user-select: none;
+  }
+  .tab.on { border-color: var(--accent); color: var(--accent); }
+  .pane { display: none; }
+  .pane.on { display: block; }
+  label { display: block; font-size: 13px; color: var(--dim); margin: 18px 0 8px; }
   textarea {
     width: 100%; min-height: 96px; resize: vertical;
     background: var(--panel); color: var(--text);
@@ -25,115 +33,176 @@
     padding: 12px 14px; font: inherit; outline: none;
   }
   textarea:focus { border-color: var(--accent); }
-  .row { display: flex; gap: 24px; flex-wrap: wrap; margin-top: 18px; }
-  .row .opt label { margin-top: 0; }
-  .opts { display: flex; gap: 10px; flex-wrap: wrap; }
+  .opts { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
   .chip {
     border: 1px solid var(--line); background: var(--panel); color: var(--dim);
     border-radius: 999px; padding: 4px 14px; font-size: 12.5px; cursor: pointer;
     user-select: none;
   }
   .chip.on { border-color: var(--accent); color: var(--accent); }
-  .slider { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 13px; }
+  .slider { display: inline-flex; align-items: center; gap: 10px; color: var(--dim); font-size: 13px; margin-left: 22px; }
   .slider b { color: var(--text); min-width: 36px; text-align: right; font-weight: 400; }
   input[type=range] { accent-color: var(--accent); width: 130px; }
-  #go {
-    margin-top: 26px; width: 100%; padding: 12px;
+  .btn {
+    margin-top: 22px; width: 100%; padding: 12px;
     background: var(--accent); color: #14161a; border: 0; border-radius: 8px;
     font: 600 15px inherit; cursor: pointer;
   }
-  #go:disabled { opacity: 0.55; cursor: wait; }
-  #out {
-    margin-top: 30px; padding: 20px 22px;
+  .btn:disabled { opacity: 0.55; cursor: wait; }
+  .btn.ghost { background: transparent; color: var(--dim); border: 1px solid var(--line); margin-top: 10px; }
+  /* chat */
+  #chatlog {
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-    font: 15px/1.9 Georgia, "Times New Roman", serif; white-space: pre-wrap;
-    min-height: 60px;
+    padding: 18px 20px; min-height: 300px; max-height: 460px; overflow-y: auto;
   }
-  #out .prompt { color: var(--dim); }
+  .turn { margin: 10px 0; white-space: pre-wrap; }
+  .turn.user { color: var(--dim); }
+  .turn.bot { font-family: Georgia, "Times New Roman", serif; font-size: 15.5px; }
+  .turn .who { font-family: inherit; font-size: 12px; letter-spacing: 1px; color: var(--accent); display: block; }
+  .turn.user .who { color: var(--dim); }
+  #chatinput { width: 100%; margin-top: 14px; min-height: 64px; }
   #err { color: #e2725b; font-size: 13px; margin-top: 12px; }
   .note { color: var(--dim); font-size: 12.5px; margin-top: 40px; border-top: 1px solid var(--line); padding-top: 18px; }
   .note p { margin: 6px 0; }
 </style>
 </head>
 <body>
-  <h1>故事接龙 <span>·</span> 33M 参数小模型</h1>
-  <p class="sub">你写个开头，它接着往下讲。选「全注意力」或「CMH」可以直观对比两种架构的生成质量——这正是论文里的核心对照。</p>
+  <h1>CMH <span>·</span> 33M 参数小模型演示</h1>
+  <p class="sub">同一个项目里的两个演示：聊天（对话微调后的模型）与故事接龙（原版续写）。 CMH 版本质量明显更差——这不是 bug，正是论文的核心对照。</p>
 
-  <label>开头（英文，建议一两句）</label>
-  <textarea id="prompt">Once upon a time, there was a little girl named Lily. She loved to play in the park. One day,</textarea>
-  <div class="row">
-    <div class="chip" data-p="Once upon a time, there was a little girl named Lily. She loved to play in the park. One day,">例 1</div>
-    <div class="chip" data-p="Tom had a small red ball. He wanted to show it to his friend Ben. Tom said,">例 2</div>
-    <div class="chip" data-p="The sun was very big and hot. Sue did not like it. She said to her mom,">例 3</div>
+  <div class="tabs">
+    <div class="tab on" data-t="chat">对话模式</div>
+    <div class="tab" data-t="story">故事接龙</div>
   </div>
 
-  <div class="row">
-    <div class="opt">
-      <label>模型</label>
-      <div class="opts">
-        <div class="chip on" data-m="full">全注意力（33.7M）</div>
-        <div class="chip" data-m="cmh">CMH 混合（38.4M）</div>
-      </div>
+  <div class="pane on" id="pane-chat">
+    <div id="chatlog"><div class="turn bot"><span class="who">ASSISTANT</span>Hi! I am a tiny language model. Ask me anything — but remember, I only read children's stories.</div></div>
+    <textarea id="chatinput" placeholder="英文输入，回车发送"></textarea>
+    <div class="opts">
+      <div class="chip on" data-m="chat-full">全注意力 · 对话版（33.7M）</div>
+      <div class="chip" data-m="chat-cmh">CMH · 对话版（38.4M）</div>
+      <div class="slider">温度 <input type="range" id="ctemp" min="0.5" max="1.1" step="0.05" value="0.8"><b id="ctempv">0.8</b></div>
     </div>
-    <div class="opt slider">
-      <label>温度</label>
-      <input type="range" id="temp" min="0.5" max="1.2" step="0.05" value="0.85">
-      <b id="tempv">0.85</b>
-    </div>
-    <div class="opt slider">
-      <label>长度</label>
-      <input type="range" id="len" min="40" max="250" step="10" value="120">
-      <b id="lenv">120</b>
-    </div>
+    <button class="btn" id="send">发送</button>
+    <button class="btn ghost" id="reset">清空对话</button>
   </div>
 
-  <button id="go">接着写</button>
-  <div id="out"><span class="prompt">生成结果会出现在这里。模型不会回答问题——它只学过讲故事，没学过听问题。</span></div>
+  <div class="pane" id="pane-story">
+    <label>开头（英文，建议一两句）</label>
+    <textarea id="prompt">Once upon a time, there was a little girl named Lily. She loved to play in the park. One day,</textarea>
+    <div class="opts">
+      <div class="chip on" data-m="full">全注意力（33.7M）</div>
+      <div class="chip" data-m="cmh">CMH 混合（38.4M）</div>
+      <div class="slider">温度 <input type="range" id="temp" min="0.5" max="1.2" step="0.05" value="0.85"><b id="tempv">0.85</b></div>
+      <div class="slider">长度 <input type="range" id="len" min="40" max="250" step="10" value="120"><b id="lenv">120</b></div>
+    </div>
+    <button class="btn" id="go">接着写</button>
+    <div id="out" style="margin-top:24px; padding:20px 22px; background:var(--panel); border:1px solid var(--line); border-radius:8px; font:15px/1.9 Georgia,serif; white-space:pre-wrap; min-height:60px;"><span class="prompt" style="color:var(--dim)">生成结果会出现在这里。</span></div>
+  </div>
+
   <div id="err"></div>
 
   <div class="note">
-    <p>两个模型的差别：全注意力可以回看整个上下文；CMH 用固定大小的记忆状态替代注意力，快但在这么小的规模下还没学会用记忆。</p>
-    <p>模型只看过英文儿童故事，写别的题材会露馅。训练日志与代码见项目仓库。</p>
+    <p>对话版模型：在故事续写模型上用约 9M token 的对话语料做了 SFT（DailyDialog + 由本地小模型改写的 TinyStories 问答），训练时只计算回答部分的损失。</p>
+    <p>模型只看过英文儿童故事与日常对话，知识量极其有限——它会流畅地胡说。训练日志与代码见项目仓库。</p>
   </div>
 
 <script>
-var model = "full";
+var chatModel = "chat-full", storyModel = "full";
+var history = "";   // chat transcript in template format
+
+// tabs
+document.querySelectorAll(".tab").forEach(function (t) {
+  t.onclick = function () {
+    document.querySelectorAll(".tab").forEach(function (x) { x.classList.remove("on"); });
+    t.classList.add("on");
+    document.querySelectorAll(".pane").forEach(function (p) { p.classList.remove("on"); });
+    document.getElementById("pane-" + t.dataset.t).classList.add("on");
+  };
+});
+// model chips (per pane, via data-m prefix)
 document.querySelectorAll("[data-m]").forEach(function (c) {
   c.onclick = function () {
-    model = c.dataset.m;
-    document.querySelectorAll("[data-m]").forEach(function (x) { x.classList.remove("on"); });
+    var same = document.querySelectorAll('[data-m^="' + (c.dataset.m.startsWith("chat") ? "chat" : "x") + '"], [data-m="full"], [data-m="cmh"]');
+    if (c.dataset.m.startsWith("chat")) {
+      document.querySelectorAll('[data-m="chat-full"],[data-m="chat-cmh"]').forEach(function (x) { x.classList.remove("on"); });
+      chatModel = c.dataset.m;
+    } else {
+      document.querySelectorAll('[data-m="full"],[data-m="cmh"]').forEach(function (x) { x.classList.remove("on"); });
+      storyModel = c.dataset.m;
+    }
     c.classList.add("on");
   };
 });
-document.querySelectorAll("[data-p]").forEach(function (c) {
-  c.onclick = function () { document.getElementById("prompt").value = c.dataset.p; };
+["ctemp"].forEach(function (id) {
+  document.getElementById(id).oninput = function () { document.getElementById(id + "v").textContent = this.value; };
 });
 document.getElementById("temp").oninput = function () { document.getElementById("tempv").textContent = this.value; };
 document.getElementById("len").oninput = function () { document.getElementById("lenv").textContent = this.value; };
+
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+function addTurn(who, text) {
+  var log = document.getElementById("chatlog");
+  var d = document.createElement("div");
+  d.className = "turn " + (who === "USER" ? "user" : "bot");
+  d.innerHTML = '<span class="who">' + who + '</span>' + esc(text);
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+}
+
+function post(url, body) {
+  return fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+    .then(function (r) { return r.json(); });
+}
+
+function sendChat() {
+  var input = document.getElementById("chatinput");
+  var u = input.value.trim();
+  var err = document.getElementById("err"), btn = document.getElementById("send");
+  if (!u || btn.disabled) return;
+  err.textContent = "";
+  addTurn("USER", u);
+  history += "User: " + u + "\n\nAssistant:";
+  input.value = "";
+  btn.disabled = true; btn.textContent = "在想……";
+  post("/api/chat", { history: history, model: chatModel,
+                      max_new: 120, temperature: +document.getElementById("ctemp").value })
+  .then(function (d) {
+    if (d.error) { err.textContent = "出错了：" + d.error; }
+    else { addTurn("ASSISTANT", d.text); history += d.text + "\n\n"; }
+  })
+  .catch(function (e) { err.textContent = "请求失败：" + e; })
+  .finally(function () { btn.disabled = false; btn.textContent = "发送"; });
+}
+document.getElementById("send").onclick = sendChat;
+document.getElementById("chatinput").addEventListener("keydown", function (e) {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+});
+document.getElementById("reset").onclick = function () {
+  history = "";
+  document.getElementById("chatlog").innerHTML =
+    '<div class="turn bot"><span class="who">ASSISTANT</span>Context cleared.</div>';
+};
 
 document.getElementById("go").onclick = function () {
   var btn = this, out = document.getElementById("out"), err = document.getElementById("err");
   err.textContent = "";
   btn.disabled = true; btn.textContent = "在想……";
-  out.innerHTML = '<span class="prompt">生成中，几秒钟就好。</span>';
-  fetch("/api/generate", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      prompt: document.getElementById("prompt").value,
-      model: model,
-      max_new: +document.getElementById("len").value,
-      temperature: +document.getElementById("temp").value
-    })
-  }).then(function (r) { return r.json(); }).then(function (d) {
+  post("/api/generate", {
+    prompt: document.getElementById("prompt").value,
+    model: storyModel,
+    max_new: +document.getElementById("len").value,
+    temperature: +document.getElementById("temp").value
+  }).then(function (d) {
     if (d.error) { err.textContent = "出错了：" + d.error; }
     else {
-      out.innerHTML = '<span class="prompt">' + document.getElementById("prompt").value.replace(/</g, "&lt;") + '</span>';
-      out.appendChild(document.createTextNode(d.text.replace(/<\|endoftext\|>/g, " ")));
+      out.innerHTML = '<span class="prompt" style="color:var(--dim)">' +
+        esc(document.getElementById("prompt").value) + '</span>';
+      out.appendChild(document.createTextNode(d.text));
     }
-  }).catch(function (e) { err.textContent = "请求失败：" + e; }).finally(function () {
-    btn.disabled = false; btn.textContent = "接着写";
-  });
+  }).catch(function (e) { err.textContent = "请求失败：" + e; })
+  .finally(function () { btn.disabled = false; btn.textContent = "接着写"; });
 };
 </script>
 </body>

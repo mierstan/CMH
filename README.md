@@ -55,7 +55,12 @@ prep_data.py        TinyStories -> GPT-2 tokenized bins
 extra_tests.py      inference-time memory ablation, learned retention, misc probes
 demo_chat.py        story-continuation sampler for the trained checkpoints
 cmh_experiments.py  the copy diagnostic + efficiency benchmark from the paper
-webapp/             story-continuation demo site (serves both trained students)
+gen_dialog.py       dialogue corpus: DailyDialog download + Qwen rewrite of TinyStories
+pack_chat.py        dialogue jsonl -> token/mask memmaps (loss only on replies)
+sft.py              chat fine-tune, warm-started from a trained student
+chat_demo.py        interactive chat REPL, /reset to clear context
+chat_probe.py       scripted chat probe, writes transcripts for side-by-side comparison
+webapp/             chat + story-continuation demo site (serves four checkpoints)
 paper/              LaTeX sources and compiled PDFs (EN + CN)
 ```
 
@@ -72,6 +77,36 @@ python webapp/server.py                     # demo at http://127.0.0.1:8765
 ```
 
 Checkpoints are excluded from git (five files, ~1.5 GB total); re-run training or ask me.
+
+## Chat fine-tune
+
+The paper's students are pretrained-only, so they continue text but cannot answer. A small
+SFT stage turns them into conversational models — useful as a demo, not as a research
+claim: nothing here changes the conclusions above.
+
+```bash
+python gen_dialog.py daily           # 11,182 DailyDialog conversations
+python gen_dialog.py rewrite 18000   # Qwen2.5-1.5B rewrites TinyStories into Q&A (~1 h on a 5070)
+python gen_dialog.py parse           # keep 3-turn-clean dialogues (56% of raw rewrites survive)
+python pack_chat.py                  # 3.5M tokens, loss only on assistant spans
+python sft.py full 1500              # warm start from student_scratch_full.pt
+python sft.py cmh 1500               # same recipe on CMH
+python chat_demo.py full             # interactive
+```
+
+Replies are masked out of the loss except for assistant content plus the closing
+separator, so the model learns when to stop rather than where to start. Held-out
+assistant cross-entropy after 1500 steps:
+
+| model | val CE | what it looks like |
+|---|---|---|
+| `student_sft_full` | 3.07 | short children's-story answers, follows topic, invents facts freely |
+| `student_sft_cmh` | 5.98 | word salad — the same 3.65-nat gap, now visible in conversation |
+
+One reproducibility trap worth naming: the prompt must end with `Assistant:` and **no
+trailing space**. GPT-2 BPE encodes a dangling space as its own token (id 220), a pattern
+that never occurs in the training stream, and generation collapses into newlines from
+there. `chat_demo.py` and `webapp/server.py` both build the prompt without it.
 
 ## Status
 

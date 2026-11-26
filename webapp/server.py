@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Story-continuation demo server for the trained students.
-Serves webapp/index.html and a /api/generate endpoint.
+"""Demo server for the trained students: chat mode + story-continuation mode.
+Serves webapp/index.html, /api/chat and /api/generate.
 Run: python server.py  ->  http://127.0.0.1:8765
 """
-import json, os, sys
+import json, os, re, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import torch
 from transformers import GPT2TokenizerFast
@@ -16,18 +16,40 @@ WEBAPP = os.path.join(ROOT, "webapp")
 PORT = 8765
 DEV = "cuda"
 VOCAB = 50257
+CTX = 512
 
 tok = GPT2TokenizerFast.from_pretrained(os.path.join(ROOT, "models", "gpt2"))
 print("loading models ...", flush=True)
 MODELS = {}
-for kind, ckpt in [("full", "student_scratch_full.pt"), ("cmh", "student_scratch_cmh.pt")]:
+SPECS = [
+    ("chat-full", "student_sft_full.pt"),
+    ("chat-cmh", "student_sft_cmh.pt"),
+    ("full", "student_scratch_full.pt"),
+    ("cmh", "student_scratch_cmh.pt"),
+]
+for name, ckpt in SPECS:
+    path = os.path.join(ROOT, "out", ckpt)
+    if not os.path.exists(path):
+        print(f"  {name}: {ckpt} not found, skipped", flush=True)
+        continue
+    kind = "full" if name.endswith("full") else "cmh"
     m = StudentLM(VOCAB, d=384, layers=8, heads=4, window=256, kind=kind).to(DEV)
-    m.load_state_dict(torch.load(os.path.join(ROOT, "out", ckpt), map_location=DEV, weights_only=False))
+    m.load_state_dict(torch.load(path, map_location=DEV, weights_only=False))
     m.eval()
-    MODELS[kind] = m
-    print(f"  {kind} ready", flush=True)
+    MODELS[name] = m
+    print(f"  {name} ready", flush=True)
 
 INDEX = open(os.path.join(WEBAPP, "index.html"), encoding="utf-8").read()
+
+
+def gen_from(prompt_ids, model, max_new, temperature, top_k, stop_at="\nUser:"):
+    with torch.no_grad():
+        out = model.generate(prompt_ids, max_new, temperature=temperature, top_k=top_k)
+    text = tok.decode(out)
+    if stop_at and stop_at in text:
+        text = text[:text.index(stop_at)]
+    return text.replace("<|endoftext|>", " ")
+
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -50,25 +72,36 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
-        if self.path != "/api/generate":
-            return self._send(404, json.dumps({"error": "not found"}))
         try:
             n = int(self.headers.get("Content-Length", 0))
             req = json.loads(self.rfile.read(n))
-            prompt = (req.get("prompt") or "").strip() or "Once upon a time,"
             model = req.get("model", "full")
             max_new = min(int(req.get("max_new", 120)), 300)
             temperature = float(req.get("temperature", 0.85))
             top_k = int(req.get("top_k", 40))
             if model not in MODELS:
                 return self._send(400, json.dumps({"error": "unknown model"}))
-            ids = tok(prompt, return_tensors="pt")["input_ids"].cuda()
-            with torch.no_grad():
-                out = MODELS[model].generate(ids, max_new, temperature=temperature, top_k=top_k)
-            text = tok.decode(out)
-            self._send(200, json.dumps({"text": text}))
+            if self.path == "/api/chat":
+                history = (req.get("history") or "").strip()
+                if not history:
+                    return self._send(400, json.dumps({"error": "empty history"}))
+                # GPT-2 BPE turns a dangling space after a colon into a lone ' '
+                # token (id 220) that never occurs in training and breaks generation.
+                history = re.sub(r":\s+$", ":", history)
+                ids = tok(history, add_special_tokens=False)["input_ids"]
+                ids = ids[-(CTX - 140):]                     # leave room for generation
+                ids = torch.tensor([ids], dtype=torch.long).cuda()
+                text = gen_from(ids, MODELS[model], max_new, temperature, top_k)
+                return self._send(200, json.dumps({"text": text.strip()}))
+            if self.path == "/api/generate":
+                prompt = (req.get("prompt") or "").strip() or "Once upon a time,"
+                ids = tok(prompt, return_tensors="pt")["input_ids"].cuda()
+                text = gen_from(ids, MODELS[model], max_new, temperature, top_k)
+                return self._send(200, json.dumps({"text": text}))
+            return self._send(404, json.dumps({"error": "not found"}))
         except Exception as e:
             self._send(500, json.dumps({"error": str(e)}))
+
 
 if __name__ == "__main__":
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
