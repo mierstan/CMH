@@ -1,8 +1,14 @@
 # -*- coding: utf-8 -*-
 """Pack dialogue jsonl into token + mask memmaps for masked-loss SFT.
+
 Format per conversation: "User: ...\n\nAssistant: ...\n\nUser: ...\n\nAssistant: ..."
-Loss mask = 1 on assistant-turn tokens + the trailing separator (model learns to stop).
-Usage: python pack_chat.py            -> data/train_chat.bin/.mask + data/val_chat.bin/.mask
+Loss mask = 1 on assistant-turn tokens + the closing separator (the model learns to stop).
+
+Sources are deduplicated, then weighted: DailyDialog and the follow-up dialogues carry
+real conversational structure, the story Q&A carries domain vocabulary, and the small
+persona set is upsampled so self-description answers actually stick.
+
+Usage: python pack_chat.py  -> data/train_chat.bin/.mask + data/val_chat.bin/.mask
 """
 import os, sys, json, random, re
 
@@ -13,15 +19,52 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(ROOT, "data")
 TOK_DIR = os.path.join(ROOT, "models", "gpt2")
 SEP = "\n\n"
-SEP_ID = 628                            # "\n\n" in GPT-2 BPE
-DAILY_COPIES = 2                        # daily dialogues are short; upsample to balance
+DAILY_COPIES = 2
+PERSONA_COPIES = 100
+FOLLOW_COPIES = 3
+VAL_PER_SOURCE = 400
 
 random.seed(0)
 
+# (file, copies in train)
+SOURCES = [
+    ("dialog_daily.jsonl", DAILY_COPIES),
+    ("dialog_story.jsonl", 1),
+    ("dialog_follow.jsonl", FOLLOW_COPIES),
+    ("dialog_persona.jsonl", PERSONA_COPIES),
+]
+
 
 def load_jsonl(path):
+    if not os.path.exists(path):
+        print("  missing (skipped):", os.path.basename(path))
+        return []
     with open(path, encoding="utf-8") as f:
         return [json.loads(l)["turns"] for l in f]
+
+
+def dedupe(convs):
+    seen, out = set(), []
+    for turns in convs:
+        key = " ".join(t.lower() for t in turns)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(turns)
+    return out
+
+
+def degenerate(turns):
+    """Drop conversations that teach nothing: empty answers, answers that just echo
+    the question, or a single word answer repeated across every turn."""
+    answers = [t[len("Assistant: "):].strip() for t in turns if t.startswith("Assistant")]
+    if not answers:
+        return True
+    if any(len(a) < 2 for a in answers):
+        return True
+    if len(set(answers)) == 1 and len(answers) > 1:
+        return True
+    return False
 
 
 def conv_text(turns):
@@ -68,16 +111,22 @@ def pack(tok, convs, out_prefix, max_len=512):
 
 def main():
     tok = GPT2TokenizerFast.from_pretrained(TOK_DIR)
-    daily = load_jsonl(os.path.join(DATA, "dialog_daily.jsonl"))
-    story = load_jsonl(os.path.join(DATA, "dialog_story.jsonl"))
-    print(f"daily {len(daily)} x{DAILY_COPIES}, story {len(story)}")
-    random.shuffle(daily)
-    random.shuffle(story)
-    val_daily, val_story = daily[:400], story[:400]
-    train_daily, train_story = daily[400:], story[400:]
-
-    pack(tok, val_daily + val_story, "val_chat")
-    pack(tok, train_daily * DAILY_COPIES + train_story, "train_chat")
+    train, val = [], []
+    for name, copies in SOURCES:
+        convs = load_jsonl(os.path.join(DATA, name))
+        if not convs:
+            continue
+        raw_n = len(convs)
+        convs = [c for c in dedupe(convs) if not degenerate(c)]
+        random.shuffle(convs)
+        n_val = min(VAL_PER_SOURCE, max(1, len(convs) // 10))
+        val += convs[:n_val]
+        train += convs[n_val:] * copies
+        print(f"  {name:24s} {raw_n:6d} raw -> {len(convs):6d} kept, "
+              f"x{copies} -> {len(convs) - n_val if copies == 1 else (len(convs) - n_val) * copies}")
+    random.shuffle(train)
+    pack(tok, val, "val_chat")
+    pack(tok, train, "train_chat")
 
 
 if __name__ == "__main__":

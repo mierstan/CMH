@@ -10,6 +10,7 @@ from transformers import GPT2TokenizerFast
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cmh_model import StudentLM
+from chat_sample import sample
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # distill/
 WEBAPP = os.path.join(ROOT, "webapp")
@@ -22,7 +23,7 @@ tok = GPT2TokenizerFast.from_pretrained(os.path.join(ROOT, "models", "gpt2"))
 print("loading models ...", flush=True)
 MODELS = {}
 SPECS = [
-    ("chat-full", "student_sft_full.pt"),
+    ("chat-full", "student_sft_full_v5.pt"),   # replay + persona + generic follow-ups
     ("chat-cmh", "student_sft_cmh.pt"),
     ("full", "student_scratch_full.pt"),
     ("cmh", "student_scratch_cmh.pt"),
@@ -42,12 +43,20 @@ for name, ckpt in SPECS:
 INDEX = open(os.path.join(WEBAPP, "index.html"), encoding="utf-8").read()
 
 
-def gen_from(prompt_ids, model, max_new, temperature, top_k, stop_at="\nUser:"):
+def gen_from(prompt_ids, model, max_new, temperature, top_k, chat=False):
+    """chat=True uses the tuned sampler: repetition controls plus a stop at the
+    training-time turn separator, which is where the model means to end its reply."""
+    if chat:
+        ids = sample(model, prompt_ids, max_new, temperature=temperature, top_k=top_k,
+                     top_p=0.9, rep_penalty=1.2, no_repeat_ngram=3,
+                     stop_sequences=[[628], [198, 198]])
+        return tok.decode(ids).strip().replace("<|endoftext|>", " ")
     with torch.no_grad():
         out = model.generate(prompt_ids, max_new, temperature=temperature, top_k=top_k)
     text = tok.decode(out)
-    if stop_at and stop_at in text:
-        text = text[:text.index(stop_at)]
+    for stop_at in ("\nUser:", "\n\n"):
+        if stop_at in text:
+            text = text[:text.index(stop_at)]
     return text.replace("<|endoftext|>", " ")
 
 
@@ -98,7 +107,7 @@ class Handler(BaseHTTPRequestHandler):
                 ids = tok(history, add_special_tokens=False)["input_ids"]
                 ids = ids[-(CTX - 140):]                     # leave room for generation
                 ids = torch.tensor([ids], dtype=torch.long).cuda()
-                text = gen_from(ids, MODELS[model], max_new, temperature, top_k)
+                text = gen_from(ids, MODELS[model], max_new, temperature, top_k, chat=True)
                 return self._send(200, json.dumps({"text": text.strip()}))
             if self.path == "/api/generate":
                 prompt = (req.get("prompt") or "").strip() or "Once upon a time,"

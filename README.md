@@ -59,7 +59,10 @@ gen_dialog.py       dialogue corpus: DailyDialog download + Qwen rewrite of Tiny
 pack_chat.py        dialogue jsonl -> token/mask memmaps (loss only on replies)
 sft.py              chat fine-tune, warm-started from a trained student
 chat_demo.py        interactive chat REPL, /reset to clear context
+chat_sample.py      decoding: repetition controls + stop at the turn separator
 chat_probe.py       scripted chat probe, writes transcripts for side-by-side comparison
+eval_chat.py        chat CE and story CE for one checkpoint (measures forgetting)
+probe_persona.py    self-description recall on question phrasings never seen in training
 webapp/             chat + story-continuation demo site (serves four checkpoints)
 paper/              LaTeX sources and compiled PDFs (EN + CN)
 ```
@@ -85,28 +88,53 @@ SFT stage turns them into conversational models — useful as a demo, not as a r
 claim: nothing here changes the conclusions above.
 
 ```bash
-python gen_dialog.py daily           # 11,182 DailyDialog conversations
-python gen_dialog.py rewrite 18000   # Qwen2.5-1.5B rewrites TinyStories into Q&A (~1 h on a 5070)
-python gen_dialog.py parse           # keep 3-turn-clean dialogues (56% of raw rewrites survive)
-python pack_chat.py                  # 3.5M tokens, loss only on assistant spans
-python sft.py full 1500              # warm start from student_scratch_full.pt
-python sft.py cmh 1500               # same recipe on CMH
-python chat_demo.py full             # interactive
+python gen_dialog.py daily            # 11,182 DailyDialog conversations
+python gen_dialog.py rewrite 18000    # Qwen2.5-1.5B rewrites TinyStories into Q&A (~1.6 h on a 5070)
+python gen_dialog.py parse            # keep dialogues with >=2 answered pairs (56% survive)
+python gen_dialog.py rewrite-followup 3000   # elaborating dialogues: each turn refers back
+python gen_dialog.py parse-followup   # also emits a generic-prompt variant of each
+python gen_dialog.py persona          # 99 self-description pairs (30 facts x question phrasings)
+python pack_chat.py                   # 4.7M tokens, loss only on assistant spans
+python sft.py full 2500 5e-5 v5 0.15  # 15% of steps replay raw TinyStories
+python chat_demo.py full v5            # interactive
+python eval_chat.py full v5            # chat CE + story CE, for forgetting
 ```
 
 Replies are masked out of the loss except for assistant content plus the closing
-separator, so the model learns when to stop rather than where to start. Held-out
-assistant cross-entropy after 1500 steps:
+separator, so the model learns when to stop rather than where to start. `pack_chat.py`
+deduplicates, drops degenerate conversations, and weights the sources: DailyDialog ×2,
+story Q&A ×1, follow-ups ×3, persona ×100 (it is 99 conversations, so the weight is
+what makes self-description stick).
 
-| model | val CE | what it looks like |
-|---|---|---|
-| `student_sft_full` | 3.07 | short children's-story answers, follows topic, invents facts freely |
-| `student_sft_cmh` | 5.98 | word salad — the same 3.65-nat gap, now visible in conversation |
+Held-out numbers after each round (same val set, 1,125 conversations):
 
-One reproducibility trap worth naming: the prompt must end with `Assistant:` and **no
-trailing space**. GPT-2 BPE encodes a dangling space as its own token (id 220), a pattern
-that never occurs in the training stream, and generation collapses into newlines from
-there. `chat_demo.py` and `webapp/server.py` both build the prompt without it.
+| checkpoint | chat CE | story CE | persona recall | what changed |
+|---|---|---|---|---|
+| pretrained | 5.21 | 1.82 | — | cannot answer at all |
+| `student_sft_full` | 2.89 | 2.31 | 3/20 | first SFT run: answers, but forgets how to continue stories |
+| `student_sft_full_v5` | 2.92 | 1.91 | 18/20 | replay + persona + generic follow-ups |
+
+The first run cost 0.49 nats of story continuation — the classic SFT failure at this
+scale. Replaying 15% of the pretraining stream on every step recovers almost all of it
+(2.31 → 1.91) while chat quality stays flat.
+
+Three things that were decoding bugs rather than model weaknesses:
+
+- **Stop at the separator.** The model closes every reply with `\n\n`; that is its own
+  end-of-turn token. Stopping only on `\n\nUser:` let it keep generating after the reply
+  was finished, which looked like rambling.
+- **Repetition controls.** `rep_penalty=1.2` plus `no_repeat_ngram=3` in `chat_sample.py`
+  kills the `My name is Lily. My name is Lily.` loop that the raw sampler falls into.
+- **No trailing space after `Assistant:`.** GPT-2 BPE encodes a dangling space as its own
+  token (id 220), a pattern that never occurs in the training stream, and generation
+  collapses into newlines. `chat_demo.py` and `webapp/server.py` both build the prompt
+  without it.
+
+What is still broken, honestly: the model has no world knowledge beyond children's
+stories (`Why is the sky blue?` gets a story-shaped answer), it forgets the start of a
+conversation after a few hundred tokens, and a follow-up question with no antecedent
+(`Can you say more?` right after a greeting) still sometimes produces pasted story
+content. These are capacity limits of 33M parameters on 74M tokens, not bugs to fix.
 
 ## Status
 

@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 """Chat SFT: fine-tune a trained student into a conversational model.
 Masked CE only on assistant spans. Warm start from an existing checkpoint.
-Usage: python sft.py <arch> [steps]     e.g. python sft.py full 4000
+Usage: python sft.py <arch> [steps] [lr] [tag] [replay]
+  python sft.py full 2500                    -> student_sft_full.pt
+  python sft.py full 2500 5e-5 v2            -> student_sft_full_v2.pt
+  python sft.py full 2500 5e-5 v2 0.15       -> 15% of steps on raw TinyStories
+                                                (keeps story continuation alive)
 """
 import os, sys, math, time
 import numpy as np
@@ -16,16 +20,19 @@ OUT = os.path.join(ROOT, "out")
 os.makedirs(OUT, exist_ok=True)
 ARCH = sys.argv[1]
 STEPS = int(sys.argv[2]) if len(sys.argv) > 2 else 4000
+LR_ARG = float(sys.argv[3]) if len(sys.argv) > 3 else None
+TAG = ("_" + sys.argv[4]) if len(sys.argv) > 4 else ""
+REPLAY = float(sys.argv[5]) if len(sys.argv) > 5 else 0.0
 
 B, T = 24, 512
-LR = 1e-4                               # low LR: avoid catastrophic forgetting
+LR = LR_ARG if LR_ARG else 1e-4          # low LR: avoid catastrophic forgetting
 WARMUP = 150
 EVAL_EVERY = 500
 DEV = "cuda"
 VOCAB = 50257
 WARM = os.path.join(OUT, f"student_scratch_{ARCH}.pt")
 
-log_f = open(os.path.join(OUT, f"sft_{ARCH}.log"), "a", encoding="utf-8")
+log_f = open(os.path.join(OUT, f"sft_{ARCH}{TAG}.log"), "a", encoding="utf-8")
 def log(*a):
     s = " ".join(str(x) for x in a)
     log_f.write(s + "\n"); log_f.flush()
@@ -35,27 +42,33 @@ torch.backends.cuda.matmul.allow_tf32 = True
 
 train = np.memmap(os.path.join(ROOT, "data", "train_chat.bin"), dtype=np.uint16, mode="r")
 tmask = np.memmap(os.path.join(ROOT, "data", "train_chat.mask"), dtype=np.uint8, mode="r")
+pre = np.memmap(os.path.join(ROOT, "data", "train.bin"), dtype=np.uint16, mode="r")
 val = np.memmap(os.path.join(ROOT, "data", "val_chat.bin"), dtype=np.uint16, mode="r")
 vmask = np.memmap(os.path.join(ROOT, "data", "val_chat.mask"), dtype=np.uint8, mode="r")
 
 def get_batch(src, msk, B, T):
+    """msk=None means "every token counts" - used for pretraining replay."""
     ix = np.random.randint(0, len(src) - T - 1, size=B)
     x = np.stack([src[i:i + T] for i in ix]).astype(np.int64)
     y = np.stack([src[i + 1:i + T + 1] for i in ix]).astype(np.int64)
-    m = np.stack([msk[i + 1:i + T + 1] for i in ix]).astype(np.float32)
+    if msk is None:
+        m = np.ones_like(y, dtype=np.float32)
+    else:
+        m = np.stack([msk[i + 1:i + T + 1] for i in ix]).astype(np.float32)
     return (torch.from_numpy(x).to(DEV), torch.from_numpy(y).to(DEV),
             torch.from_numpy(m).to(DEV))
 
 model = StudentLM(VOCAB, d=384, layers=8, heads=4, window=256, kind=ARCH).to(DEV)
 model.load_state_dict(torch.load(WARM, map_location=DEV, weights_only=False))
-log(f"SFT {ARCH} from {os.path.basename(WARM)} steps={STEPS} params={param_count(model)/1e6:.1f}M")
+log(f"SFT {ARCH}{TAG} from {os.path.basename(WARM)} steps={STEPS} lr={LR:.1e} "
+    f"replay={REPLAY} params={param_count(model)/1e6:.1f}M")
 
 opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.1, betas=(0.9, 0.95))
 sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=LR, total_steps=STEPS,
                                             pct_start=min(0.3, max(0.02, WARMUP / STEPS)),
                                             anneal_strategy="cos")
 
-CKPT = os.path.join(OUT, f"ckpt_sft_{ARCH}.pt")
+CKPT = os.path.join(OUT, f"ckpt_sft_{ARCH}{TAG}.pt")
 start_step = 0
 if os.path.exists(CKPT):
     ck = torch.load(CKPT, map_location=DEV, weights_only=False)
@@ -91,7 +104,10 @@ def eval_val():
 
 t0 = time.time()
 for step in range(start_step, STEPS):
-    x, y, m = get_batch(train, tmask, B, T)
+    if REPLAY > 0 and np.random.rand() < REPLAY:
+        x, y, m = get_batch(pre, None, B, T)         # replay: keep pretraining ability
+    else:
+        x, y, m = get_batch(train, tmask, B, T)
     opt.zero_grad()
     loss_sum = 0.0
     for mi in range(4):                              # micro-batch 6
@@ -113,5 +129,5 @@ for step in range(start_step, STEPS):
         log(f"== step {step+1}: val_asst_ce {vl:.4f} (ppl {math.exp(min(vl,20)):.2f})")
         save_ckpt(step + 1)
 
-torch.save(model.state_dict(), os.path.join(OUT, f"student_sft_{ARCH}.pt"))
+torch.save(model.state_dict(), os.path.join(OUT, f"student_sft_{ARCH}{TAG}.pt"))
 log(f"DONE sft {ARCH} in {time.time()-t0:.0f}s")
